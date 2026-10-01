@@ -136,6 +136,27 @@ function normalizeResult(parsed) {
       typeof parsed?.location === 'string' && parsed.location.trim()
         ? parsed.location.trim()
         : null,
+    target_audience:
+      typeof parsed?.target_audience === 'string' && parsed.target_audience.trim()
+        ? parsed.target_audience.trim()
+        : null,
+    important_dates: Array.isArray(parsed?.important_dates)
+      ? parsed.important_dates
+          .filter((item) => item && typeof item === 'object')
+          .map((item) => ({
+            label:
+              typeof item.label === 'string' && item.label.trim()
+                ? item.label.trim()
+                : '주요 일정',
+            date: normalizeDate(item.date),
+            time:
+              typeof item.time === 'string' && item.time.trim()
+                ? item.time.trim()
+                : null,
+          }))
+          .filter((item) => item.date)
+          .slice(0, 8)
+      : [],
     tasks: Array.isArray(parsed?.tasks)
       ? parsed.tasks
           .filter((item) => typeof item === 'string' && item.trim())
@@ -163,11 +184,17 @@ function buildPrompt(fileName) {
 - deadline: 신청/제출 마감일. 확인할 수 없으면 빈 문자열
 - event_date: 행사/교육/시험 등이 실제로 열리는 대표 날짜. 확인할 수 없으면 빈 문자열
 - location: 장소. 확인할 수 없으면 빈 문자열
+- target_audience: 참가 대상·신청 대상·적용 대상을 한 문장으로 정리. 확인할 수 없으면 빈 문자열
+- important_dates: 사용자가 놓치면 안 되는 주요 일정을 최대 8개까지 배열로 정리
+  - label: 일정 이름
+  - date: YYYY-MM-DD
+  - time: 시간이 명시된 경우에만 HH:MM 또는 문서에 적힌 시간 표현, 없으면 빈 문자열
 - tasks: 사용자가 실제로 해야 하는 행동, 제출물, 준비사항을 짧은 문장 배열로 정리
 - category: 학교, 대회, 행사, 모집, 취업, 장학, 기타 중 하나
 
 날짜가 명확하면 YYYY-MM-DD 형식으로 변환하세요.
-문서가 길면 세부 규정을 모두 복사하지 말고, 참가자에게 중요한 일정·대상·제출방법·준비물·유의사항을 우선 요약하세요.`;
+문서가 길면 세부 규정을 모두 복사하지 말고, 참가자에게 중요한 일정·대상·제출방법·준비물·유의사항을 우선 요약하세요.
+중간 발표일, 접수 시작일, 심사 기간처럼 실제 행동이나 준비에 중요한 일정도 important_dates에 포함하세요.`;
 }
 
 async function buildGeminiInput({ buffer, fileName, mimeType }) {
@@ -305,6 +332,19 @@ export async function POST(request) {
                 deadline: { type: 'string' },
                 event_date: { type: 'string' },
                 location: { type: 'string' },
+                target_audience: { type: 'string' },
+                important_dates: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      label: { type: 'string' },
+                      date: { type: 'string' },
+                      time: { type: 'string' },
+                    },
+                    required: ['label', 'date', 'time'],
+                  },
+                },
                 tasks: {
                   type: 'array',
                   items: { type: 'string' },
@@ -320,6 +360,8 @@ export async function POST(request) {
                 'deadline',
                 'event_date',
                 'location',
+                'target_audience',
+                'important_dates',
                 'tasks',
                 'category',
               ],
@@ -356,6 +398,18 @@ export async function POST(request) {
     const result = normalizeResult(parsed);
     const supabase = getServerSupabase();
 
+    // 기존 DB 스키마를 바꾸지 않고도 참가 대상/주요 일정을 보존하기 위해
+    // 화면에는 숨기는 메타 항목을 tasks(text[]) 안에 함께 저장합니다.
+    const storedTasks = [
+      ...(result.target_audience
+        ? [`__TARGET__:${result.target_audience}`]
+        : []),
+      ...result.important_dates.map((item) =>
+        `__DATE__:${JSON.stringify(item)}`
+      ),
+      ...result.tasks,
+    ];
+
     const { error: summaryError } = await supabase
       .from('notice_summaries')
       .upsert(
@@ -366,7 +420,7 @@ export async function POST(request) {
           deadline: result.deadline,
           event_date: result.event_date,
           location: result.location,
-          tasks: result.tasks,
+          tasks: storedTasks,
           category: result.category,
         },
         { onConflict: 'notice_id' }
