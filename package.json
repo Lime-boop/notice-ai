@@ -13,6 +13,7 @@
     "react-dom": "^18",
     "@supabase/supabase-js": "^2.45.0",
     "jszip": "^3.10.1",
-    "js-hwp": "^0.0.1"
+    "js-hwp": "^0.0.1",
+    "@ohah/hwpjs": "^0.1.0-rc.10"
   }
 }
