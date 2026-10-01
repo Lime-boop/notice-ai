@@ -98,20 +98,53 @@ async function extractHwpxText(buffer) {
 }
 
 async function extractHwpText(buffer) {
-  try {
-    const doc = openHwp(new Uint8Array(buffer));
-    const text = getHwpText(doc)?.trim();
+  const bytes = new Uint8Array(buffer);
+  const errors = [];
 
-    if (!text) {
-      throw new Error('HWP에서 읽을 수 있는 텍스트를 찾지 못했습니다.');
+  // 1차: 실제 공공기관/학교 HWP에서 호환성이 더 좋은 Rust 기반 파서
+  try {
+    const { toMarkdown } = await import('@ohah/hwpjs');
+    const result = toMarkdown(Buffer.from(bytes), {
+      image: 'blob',
+      use_html: false,
+      include_version: false,
+      include_page_info: false,
+    });
+
+    const markdown = result?.markdown?.trim();
+
+    if (markdown && markdown.length >= 10) {
+      return markdown.slice(0, MAX_EXTRACTED_TEXT);
     }
 
-    return text.slice(0, MAX_EXTRACTED_TEXT);
+    errors.push('hwpjs: 추출된 본문이 비어 있음');
   } catch (error) {
-    throw new Error(
-      'HWP 문서를 읽지 못했습니다. 손상되었거나 지원하지 않는 구형 형식일 수 있습니다.'
+    errors.push(
+      'hwpjs: ' + (error instanceof Error ? error.message : String(error))
     );
   }
+
+  // 2차: 순수 JS 파서로 자동 재시도
+  try {
+    const doc = openHwp(bytes);
+    const text = getHwpText(doc)?.trim();
+
+    if (text && text.length >= 10) {
+      return text.slice(0, MAX_EXTRACTED_TEXT);
+    }
+
+    errors.push('js-hwp: 추출된 본문이 비어 있음');
+  } catch (error) {
+    errors.push(
+      'js-hwp: ' + (error instanceof Error ? error.message : String(error))
+    );
+  }
+
+  throw new Error(
+    '이 HWP 파일의 본문을 읽지 못했습니다. 같은 파일을 PDF 또는 HWPX로 저장하면 분석할 수 있습니다. (' +
+      errors.join(' / ') +
+      ')'
+  );
 }
 
 async function extractDocxText(buffer) {
