@@ -1,8 +1,11 @@
 import { createClient } from '@supabase/supabase-js';
+import JSZip from 'jszip';
 
 export const maxDuration = 60;
 
 const MODEL = 'gemini-3.8-flash';
+const MAX_FILE_SIZE = 30 * 1024 * 1024;
+const MAX_EXTRACTED_TEXT = 180000;
 
 function getServerSupabase() {
   const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -41,6 +44,75 @@ function extractGeminiText(data) {
   return legacyTexts.join('').trim();
 }
 
+function decodeXmlEntities(text) {
+  return text
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
+}
+
+function xmlToPlainText(xml) {
+  return decodeXmlEntities(
+    xml
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+  );
+}
+
+async function extractHwpxText(buffer) {
+  const zip = await JSZip.loadAsync(buffer);
+
+  const sectionNames = Object.keys(zip.files)
+    .filter((name) => /^Contents\/section\d+\.xml$/i.test(name))
+    .sort((a, b) => {
+      const aNum = Number(a.match(/section(\d+)/i)?.[1] || 0);
+      const bNum = Number(b.match(/section(\d+)/i)?.[1] || 0);
+      return aNum - bNum;
+    });
+
+  if (sectionNames.length === 0) {
+    throw new Error('HWPX 본문을 찾지 못했습니다.');
+  }
+
+  const parts = [];
+
+  for (const name of sectionNames) {
+    const xml = await zip.file(name)?.async('string');
+    if (xml) {
+      const text = xmlToPlainText(xml);
+      if (text) parts.push(text);
+    }
+  }
+
+  const result = parts.join('\n\n').trim();
+
+  if (!result) {
+    throw new Error('HWPX에서 읽을 수 있는 텍스트를 찾지 못했습니다.');
+  }
+
+  return result.slice(0, MAX_EXTRACTED_TEXT);
+}
+
+async function extractDocxText(buffer) {
+  const zip = await JSZip.loadAsync(buffer);
+  const xml = await zip.file('word/document.xml')?.async('string');
+
+  if (!xml) {
+    throw new Error('DOCX 본문을 찾지 못했습니다.');
+  }
+
+  const text = xmlToPlainText(xml);
+
+  if (!text) {
+    throw new Error('DOCX에서 읽을 수 있는 텍스트를 찾지 못했습니다.');
+  }
+
+  return text.slice(0, MAX_EXTRACTED_TEXT);
+}
+
 function normalizeDate(value) {
   if (!value || typeof value !== 'string') return null;
   return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
@@ -68,12 +140,101 @@ function normalizeResult(parsed) {
       ? parsed.tasks
           .filter((item) => typeof item === 'string' && item.trim())
           .map((item) => item.trim())
-          .slice(0, 8)
+          .slice(0, 10)
       : [],
     category: allowedCategories.includes(parsed?.category)
       ? parsed.category
       : '기타',
   };
+}
+
+function getExtension(fileName = '') {
+  return fileName.split('.').pop()?.toLowerCase() || '';
+}
+
+function buildPrompt(fileName) {
+  return `당신은 학교/기관 공지사항 정리 도우미입니다.
+첨부된 파일 "${fileName || '공지 파일'}"의 실제 내용만 근거로 분석하세요.
+보이지 않거나 문서에 없는 날짜, 장소, 마감일, 해야 할 일을 추측하거나 만들어내지 마세요.
+
+분석 기준:
+- title: 공지의 핵심 제목
+- summary: 중요한 내용을 3~5문장으로 요약
+- deadline: 신청/제출 마감일. 확인할 수 없으면 빈 문자열
+- event_date: 행사/교육/시험 등이 실제로 열리는 대표 날짜. 확인할 수 없으면 빈 문자열
+- location: 장소. 확인할 수 없으면 빈 문자열
+- tasks: 사용자가 실제로 해야 하는 행동, 제출물, 준비사항을 짧은 문장 배열로 정리
+- category: 학교, 대회, 행사, 모집, 취업, 장학, 기타 중 하나
+
+날짜가 명확하면 YYYY-MM-DD 형식으로 변환하세요.
+문서가 길면 세부 규정을 모두 복사하지 말고, 참가자에게 중요한 일정·대상·제출방법·준비물·유의사항을 우선 요약하세요.`;
+}
+
+async function buildGeminiInput({ buffer, fileName, mimeType }) {
+  const extension = getExtension(fileName);
+  const base64 = Buffer.from(buffer).toString('base64');
+  const prompt = buildPrompt(fileName);
+
+  if ((mimeType || '').startsWith('image/') || ['png', 'jpg', 'jpeg', 'webp', 'bmp'].includes(extension)) {
+    return [
+      { type: 'text', text: prompt },
+      {
+        type: 'image',
+        data: base64,
+        mime_type: mimeType || (extension === 'png' ? 'image/png' : 'image/jpeg'),
+      },
+    ];
+  }
+
+  if (mimeType === 'application/pdf' || extension === 'pdf') {
+    return [
+      { type: 'text', text: prompt },
+      {
+        type: 'document',
+        data: base64,
+        mime_type: 'application/pdf',
+      },
+    ];
+  }
+
+  if (extension === 'hwpx') {
+    const text = await extractHwpxText(buffer);
+    return [
+      {
+        type: 'text',
+        text: `${prompt}\n\n[HWPX에서 추출한 본문]\n${text}`,
+      },
+    ];
+  }
+
+  if (extension === 'docx') {
+    const text = await extractDocxText(buffer);
+    return [
+      {
+        type: 'text',
+        text: `${prompt}\n\n[DOCX에서 추출한 본문]\n${text}`,
+      },
+    ];
+  }
+
+  if (
+    (mimeType || '').startsWith('text/') ||
+    ['txt', 'csv', 'json', 'xml'].includes(extension)
+  ) {
+    const text = Buffer.from(buffer).toString('utf8').slice(0, MAX_EXTRACTED_TEXT);
+    return [
+      {
+        type: 'text',
+        text: `${prompt}\n\n[문서 본문]\n${text}`,
+      },
+    ];
+  }
+
+  if (extension === 'hwp') {
+    throw new Error('구형 .hwp 파일은 바로 분석할 수 없습니다. HWPX 또는 PDF로 저장한 뒤 업로드해주세요.');
+  }
+
+  throw new Error('지원하지 않는 파일 형식입니다. 이미지, PDF, HWPX, DOCX, TXT, CSV를 사용해주세요.');
 }
 
 export async function POST(request) {
@@ -88,45 +249,39 @@ export async function POST(request) {
 
     const body = await request.json();
     noticeId = body?.noticeId;
-    const imageUrl = body?.imageUrl;
+    const fileUrl = body?.fileUrl || body?.imageUrl;
+    const fileName = body?.fileName || 'notice-file';
+    const mimeType = body?.mimeType || '';
 
-    if (!noticeId || !imageUrl) {
+    if (!noticeId || !fileUrl) {
       return Response.json(
-        { success: false, error: 'noticeId와 imageUrl이 필요합니다.' },
+        { success: false, error: 'noticeId와 fileUrl이 필요합니다.' },
         { status: 400 }
       );
     }
 
-    const imageResponse = await fetch(imageUrl, { cache: 'no-store' });
+    const fileResponse = await fetch(fileUrl, { cache: 'no-store' });
 
-    if (!imageResponse.ok) {
-      throw new Error('업로드한 이미지를 불러오지 못했습니다.');
+    if (!fileResponse.ok) {
+      throw new Error('업로드한 파일을 불러오지 못했습니다.');
     }
 
-    const imageBuffer = await imageResponse.arrayBuffer();
+    const fileBuffer = await fileResponse.arrayBuffer();
 
-    if (imageBuffer.byteLength > 20 * 1024 * 1024) {
-      throw new Error('이미지 크기가 너무 큽니다. 20MB 이하 이미지를 사용해주세요.');
+    if (fileBuffer.byteLength > MAX_FILE_SIZE) {
+      throw new Error('파일 크기가 너무 큽니다. 30MB 이하 파일을 사용해주세요.');
     }
 
-    const mimeType = imageResponse.headers.get('content-type') || 'image/jpeg';
-    const base64Image = Buffer.from(imageBuffer).toString('base64');
+    const resolvedMimeType =
+      mimeType ||
+      fileResponse.headers.get('content-type') ||
+      'application/octet-stream';
 
-    const prompt = `당신은 공지사항 정리 도우미입니다.
-이미지에 실제로 보이는 내용만 근거로 분석하세요.
-보이지 않는 날짜, 장소, 마감일, 해야 할 일을 추측하거나 만들어내지 마세요.
-
-분석 기준:
-- title: 공지의 핵심 제목
-- summary: 중요한 내용만 2~4문장으로 간결하게 요약
-- deadline: 신청/제출 마감일. 확인할 수 없으면 빈 문자열
-- event_date: 행사/교육/시험 등이 실제로 열리는 날짜. 확인할 수 없으면 빈 문자열
-- location: 장소. 확인할 수 없으면 빈 문자열
-- tasks: 사용자가 실제로 해야 하는 행동만 짧은 문장 배열로 정리
-- category: 학교, 대회, 행사, 모집, 취업, 장학, 기타 중 하나
-
-날짜를 확인할 수 있다면 YYYY-MM-DD 형식으로 변환하세요.
-이미지가 공지사항이 아니더라도 보이는 내용을 설명하고 category는 기타로 지정하세요.`;
+    const input = await buildGeminiInput({
+      buffer: fileBuffer,
+      fileName,
+      mimeType: resolvedMimeType,
+    });
 
     const geminiResponse = await fetch(
       'https://generativelanguage.googleapis.com/v1beta/interactions',
@@ -138,14 +293,7 @@ export async function POST(request) {
         },
         body: JSON.stringify({
           model: MODEL,
-          input: [
-            { type: 'text', text: prompt },
-            {
-              type: 'image',
-              data: base64Image,
-              mime_type: mimeType,
-            },
-          ],
+          input,
           response_format: {
             type: 'text',
             mime_type: 'application/json',
