@@ -3,6 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { supabase } from '../lib/supabaseClient';
 
+const MAX_FILE_SIZE = 30 * 1024 * 1024;
+const ALLOWED_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'pdf', 'hwpx', 'docx', 'txt', 'csv'];
+
 export default function Home() {
   const inputRef = useRef(null);
 
@@ -52,7 +55,7 @@ export default function Home() {
   }, [loadNotices]);
 
   useEffect(() => {
-    if (!file) {
+    if (!file || !file.type.startsWith('image/')) {
       setPreviewUrl('');
       return;
     }
@@ -63,16 +66,32 @@ export default function Home() {
     return () => URL.revokeObjectURL(url);
   }, [file]);
 
+  function getExtension(name = '') {
+    return name.split('.').pop()?.toLowerCase() || '';
+  }
+
+  function getFileIcon(selectedFile) {
+    const ext = getExtension(selectedFile?.name);
+
+    if (ext === 'pdf') return '📕';
+    if (ext === 'hwpx') return '📘';
+    if (ext === 'docx') return '📄';
+    if (['txt', 'csv'].includes(ext)) return '📝';
+    return '🖼️';
+  }
+
   function selectFile(selectedFile) {
     if (!selectedFile) return;
 
-    if (!selectedFile.type.startsWith('image/')) {
-      setMessage('이미지 파일만 선택할 수 있습니다.');
+    const extension = getExtension(selectedFile.name);
+
+    if (!ALLOWED_EXTENSIONS.includes(extension)) {
+      setMessage('이미지, PDF, HWPX, DOCX, TXT, CSV 파일만 업로드할 수 있습니다.');
       return;
     }
 
-    if (selectedFile.size > 20 * 1024 * 1024) {
-      setMessage('20MB 이하 이미지만 업로드할 수 있습니다.');
+    if (selectedFile.size > MAX_FILE_SIZE) {
+      setMessage('30MB 이하 파일만 업로드할 수 있습니다.');
       return;
     }
 
@@ -116,10 +135,10 @@ export default function Home() {
 
     setBusy(true);
     setResult(null);
-    setMessage('이미지를 업로드하고 있습니다...');
+    setMessage('파일을 업로드하고 있습니다...');
 
     try {
-      const fileExt = file.name.split('.').pop()?.toLowerCase() || 'jpg';
+      const fileExt = getExtension(file.name) || 'bin';
       const fileName = `${Date.now()}-${crypto.randomUUID()}.${fileExt}`;
 
       const { error: uploadError } = await supabase.storage
@@ -131,19 +150,19 @@ export default function Home() {
         });
 
       if (uploadError) {
-        throw new Error('이미지 업로드 실패: ' + uploadError.message);
+        throw new Error('파일 업로드 실패: ' + uploadError.message);
       }
 
       const { data: publicUrlData } = supabase.storage
         .from('notice-images')
         .getPublicUrl(fileName);
 
-      const imageUrl = publicUrlData.publicUrl;
+      const fileUrl = publicUrlData.publicUrl;
 
       const { data: notice, error: insertError } = await supabase
         .from('notices')
         .insert({
-          image_url: imageUrl,
+          image_url: fileUrl,
           status: 'pending',
         })
         .select('id')
@@ -154,8 +173,7 @@ export default function Home() {
       }
 
       await loadNotices();
-
-      setMessage('AI가 공지사항을 분석하고 있습니다...');
+      setMessage('AI가 공지 내용을 분석하고 있습니다...');
 
       const response = await fetch('/api/analyze', {
         method: 'POST',
@@ -164,7 +182,9 @@ export default function Home() {
         },
         body: JSON.stringify({
           noticeId: notice.id,
-          imageUrl,
+          fileUrl,
+          fileName: file.name,
+          mimeType: file.type,
         }),
       });
 
@@ -232,7 +252,7 @@ export default function Home() {
           </h1>
 
           <p>
-            학교 공지, 행사 포스터, 안내문 이미지를 올리면
+            공지 이미지뿐 아니라 PDF·HWPX 문서도 올려보세요.
             AI가 핵심 내용과 날짜, 장소, 해야 할 일을 자동으로 정리합니다.
           </p>
         </section>
@@ -252,47 +272,49 @@ export default function Home() {
                 : undefined
             }
           >
-            {!previewUrl ? (
+            {!file ? (
               <>
-                <div className="upload-icon">📄</div>
-                <h3>공지사항 이미지를 올려주세요</h3>
+                <div className="upload-icon">📚</div>
+                <h3>공지사항 파일을 올려주세요</h3>
                 <p>
-                  이미지를 이곳에 드래그하거나
+                  이미지 · PDF · HWPX · DOCX · TXT · CSV 지원
                   <br />
-                  아래 버튼으로 파일을 선택할 수 있습니다.
+                  파일을 드래그하거나 아래에서 선택할 수 있습니다.
                 </p>
 
                 <input
                   ref={inputRef}
                   className="file-input"
                   type="file"
-                  accept="image/*"
+                  accept=".png,.jpg,.jpeg,.webp,.bmp,.pdf,.hwpx,.docx,.txt,.csv,image/*,application/pdf"
                   onChange={handleFileChange}
                 />
               </>
             ) : (
               <>
-                <img
-                  className="preview"
-                  src={previewUrl}
-                  alt="선택한 공지사항 미리보기"
-                />
+                {previewUrl ? (
+                  <img
+                    className="preview"
+                    src={previewUrl}
+                    alt="선택한 공지사항 미리보기"
+                  />
+                ) : (
+                  <div className="document-preview">
+                    <div className="document-icon">{getFileIcon(file)}</div>
+                    <strong>{file.name}</strong>
+                    <span>{(file.size / 1024 / 1024).toFixed(2)} MB</span>
+                  </div>
+                )}
 
-                <p style={{ marginTop: '14px' }}>{file?.name}</p>
+                {previewUrl && <p style={{ marginTop: '14px' }}>{file.name}</p>}
 
                 <button
                   type="button"
                   onClick={removeFile}
                   disabled={busy}
-                  style={{
-                    marginTop: '12px',
-                    border: '0',
-                    background: 'transparent',
-                    color: '#777e90',
-                    fontWeight: '700',
-                  }}
+                  className="change-file-button"
                 >
-                  다른 이미지 선택
+                  다른 파일 선택
                 </button>
               </>
             )}
@@ -380,7 +402,7 @@ export default function Home() {
           ) : notices.length === 0 ? (
             <div className="empty-state">
               <strong>아직 분석한 공지가 없습니다.</strong>
-              첫 번째 공지사항 이미지를 올려보세요.
+              첫 번째 공지사항 파일을 올려보세요.
             </div>
           ) : (
             <div className="notice-list">
