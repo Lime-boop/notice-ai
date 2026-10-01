@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import JSZip from 'jszip';
+import { open as openHwp, documentText as getHwpText } from 'js-hwp';
 
 export const maxDuration = 60;
 
@@ -94,6 +95,23 @@ async function extractHwpxText(buffer) {
   }
 
   return result.slice(0, MAX_EXTRACTED_TEXT);
+}
+
+async function extractHwpText(buffer) {
+  try {
+    const doc = openHwp(new Uint8Array(buffer));
+    const text = getHwpText(doc)?.trim();
+
+    if (!text) {
+      throw new Error('HWP에서 읽을 수 있는 텍스트를 찾지 못했습니다.');
+    }
+
+    return text.slice(0, MAX_EXTRACTED_TEXT);
+  } catch (error) {
+    throw new Error(
+      'HWP 문서를 읽지 못했습니다. 손상되었거나 지원하지 않는 구형 형식일 수 있습니다.'
+    );
+  }
 }
 
 async function extractDocxText(buffer) {
@@ -224,6 +242,16 @@ async function buildGeminiInput({ buffer, fileName, mimeType }) {
     ];
   }
 
+  if (extension === 'hwp') {
+    const text = await extractHwpText(buffer);
+    return [
+      {
+        type: 'text',
+        text: `${prompt}\n\n[HWP에서 추출한 본문]\n${text}`,
+      },
+    ];
+  }
+
   if (extension === 'hwpx') {
     const text = await extractHwpxText(buffer);
     return [
@@ -257,11 +285,7 @@ async function buildGeminiInput({ buffer, fileName, mimeType }) {
     ];
   }
 
-  if (extension === 'hwp') {
-    throw new Error('구형 .hwp 파일은 바로 분석할 수 없습니다. HWPX 또는 PDF로 저장한 뒤 업로드해주세요.');
-  }
-
-  throw new Error('지원하지 않는 파일 형식입니다. 이미지, PDF, HWPX, DOCX, TXT, CSV를 사용해주세요.');
+  throw new Error('지원하지 않는 파일 형식입니다. 이미지, PDF, HWP, HWPX, DOCX, TXT, CSV를 사용해주세요.');
 }
 
 export async function POST(request) {
