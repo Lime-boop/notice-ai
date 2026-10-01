@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { supabase } from '../lib/supabaseClient';
 
 const MAX_FILE_SIZE = 30 * 1024 * 1024;
-const ALLOWED_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'pdf', 'hwpx', 'docx', 'txt', 'csv'];
+const ALLOWED_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'pdf', 'hwp', 'hwpx', 'docx', 'txt', 'csv'];
 
 export default function Home() {
   const inputRef = useRef(null);
@@ -74,6 +74,7 @@ export default function Home() {
     const ext = getExtension(selectedFile?.name);
 
     if (ext === 'pdf') return '📕';
+    if (ext === 'hwp') return '📗';
     if (ext === 'hwpx') return '📘';
     if (ext === 'docx') return '📄';
     if (['txt', 'csv'].includes(ext)) return '📝';
@@ -86,7 +87,7 @@ export default function Home() {
     const extension = getExtension(selectedFile.name);
 
     if (!ALLOWED_EXTENSIONS.includes(extension)) {
-      setMessage('이미지, PDF, HWPX, DOCX, TXT, CSV 파일만 업로드할 수 있습니다.');
+      setMessage('이미지, PDF, HWP, HWPX, DOCX, TXT, CSV 파일만 업로드할 수 있습니다.');
       return;
     }
 
@@ -281,7 +282,7 @@ export default function Home() {
           </h1>
 
           <p>
-            공지 이미지뿐 아니라 PDF·HWPX 문서도 올려보세요.
+            공지 이미지뿐 아니라 PDF·HWP·HWPX 문서도 올려보세요.
             AI가 핵심 내용과 날짜, 장소, 해야 할 일을 자동으로 정리합니다.
           </p>
         </section>
@@ -306,7 +307,7 @@ export default function Home() {
                 <div className="upload-icon">📚</div>
                 <h3>공지사항 파일을 올려주세요</h3>
                 <p>
-                  이미지 · PDF · HWPX · DOCX · TXT · CSV 지원
+                  이미지 · PDF · HWP · HWPX · DOCX · TXT · CSV 지원
                   <br />
                   파일을 드래그하거나 아래에서 선택할 수 있습니다.
                 </p>
@@ -315,7 +316,7 @@ export default function Home() {
                   ref={inputRef}
                   className="file-input"
                   type="file"
-                  accept=".png,.jpg,.jpeg,.webp,.bmp,.pdf,.hwpx,.docx,.txt,.csv,image/*,application/pdf"
+                  accept=".png,.jpg,.jpeg,.webp,.bmp,.pdf,.hwp,.hwpx,.docx,.txt,.csv,image/*,application/pdf,application/x-hwp,application/haansofthwp"
                   onChange={handleFileChange}
                 />
               </>
