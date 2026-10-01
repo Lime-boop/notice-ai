@@ -228,6 +228,35 @@ export default function Home() {
     }
   }
 
+  function splitStoredTasks(tasks = []) {
+    const cleanTasks = [];
+    const importantDates = [];
+    let targetAudience = null;
+
+    for (const item of tasks || []) {
+      if (typeof item !== 'string') continue;
+
+      if (item.startsWith('__TARGET__:')) {
+        targetAudience = item.replace('__TARGET__:', '').trim() || null;
+        continue;
+      }
+
+      if (item.startsWith('__DATE__:')) {
+        try {
+          const parsed = JSON.parse(item.replace('__DATE__:', ''));
+          if (parsed?.date) importantDates.push(parsed);
+        } catch {
+          // 잘못된 메타데이터는 일반 항목에서 제외합니다.
+        }
+        continue;
+      }
+
+      cleanTasks.push(item);
+    }
+
+    return { cleanTasks, importantDates, targetAudience };
+  }
+
   return (
     <div className="page">
       <header className="header">
@@ -362,6 +391,30 @@ export default function Home() {
                 <div className="info-value">{result.category}</div>
               </div>
 
+              <div className="info-box full-width-box">
+                <span className="info-label">참가 대상</span>
+                <div className="info-value">
+                  {result.target_audience || '확인되지 않음'}
+                </div>
+              </div>
+
+              {result.important_dates?.length > 0 && (
+                <div className="info-box full-width-box">
+                  <span className="info-label">주요 일정</span>
+                  <div className="schedule-list">
+                    {result.important_dates.map((item, index) => (
+                      <div className="schedule-item" key={`${item.label}-${item.date}-${index}`}>
+                        <span className="schedule-label">{item.label}</span>
+                        <span className="schedule-date">
+                          {formatDate(item.date)}
+                          {item.time ? ` · ${item.time}` : ''}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div className="info-box summary-box">
                 <span className="info-label">핵심 요약</span>
                 <p className="summary-text">{result.summary}</p>
@@ -374,7 +427,8 @@ export default function Home() {
                   <ul className="task-list">
                     {result.tasks.map((task, index) => (
                       <li className="task-item" key={`${task}-${index}`}>
-                        ✓ {task}
+                        <span className="task-check">✓</span>
+                        <span>{task}</span>
                       </li>
                     ))}
                   </ul>
@@ -408,6 +462,7 @@ export default function Home() {
             <div className="notice-list">
               {notices.map((notice) => {
                 const summary = notice.notice_summaries?.[0];
+                const metadata = splitStoredTasks(summary?.tasks || []);
 
                 return (
                   <article className="notice-card" key={notice.id}>
@@ -432,6 +487,23 @@ export default function Home() {
                     {summary ? (
                       <>
                         <p className="notice-summary">{summary.summary}</p>
+
+                        {metadata.targetAudience && (
+                          <p className="notice-meta">
+                            <strong>대상</strong> {metadata.targetAudience}
+                          </p>
+                        )}
+
+                        {metadata.importantDates.length > 0 && (
+                          <div className="notice-mini-schedule">
+                            {metadata.importantDates.slice(0, 3).map((item, index) => (
+                              <span key={`${item.label}-${index}`}>
+                                {item.label} · {formatDate(item.date)}
+                                {item.time ? ` ${item.time}` : ''}
+                              </span>
+                            ))}
+                          </div>
+                        )}
 
                         {summary.deadline && (
                           <p className="notice-date">
