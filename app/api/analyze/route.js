@@ -27,6 +27,65 @@ function getServerSupabase() {
   });
 }
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function requestGeminiWithRetry(apiKey, body) {
+  const delays = [0, 1000, 2000, 4000];
+  let lastMessage = 'Gemini 분석 요청에 실패했습니다.';
+
+  for (const delay of delays) {
+    if (delay) await sleep(delay);
+
+    const response = await fetch(
+      'https://generativelanguage.googleapis.com/v1beta/interactions',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey,
+        },
+        body: JSON.stringify(body),
+      }
+    );
+
+    const rawBody = await response.text();
+    let data = null;
+
+    if (rawBody) {
+      try {
+        data = JSON.parse(rawBody);
+      } catch {
+        data = null;
+      }
+    }
+
+    if (response.ok) {
+      if (!data) {
+        throw new Error(
+          'Gemini가 JSON이 아닌 응답을 반환했습니다. 잠시 후 다시 시도해주세요.'
+        );
+      }
+
+      return data;
+    }
+
+    lastMessage =
+      data?.error?.message ||
+      data?.message ||
+      rawBody?.slice(0, 500) ||
+      `Gemini 요청 실패 (HTTP ${response.status})`;
+
+    if (![429, 500, 502, 503, 504].includes(response.status)) {
+      throw new Error(lastMessage);
+    }
+  }
+
+  throw new Error(
+    'Gemini 서버가 혼잡하거나 일시적으로 응답하지 않습니다. 잠시 후 다시 시도해주세요. ' +
+      lastMessage
+  );
+}
+
 function extractGeminiText(data) {
   const stepTexts = (data?.steps || [])
     .filter((step) => step?.type === 'model_output')
@@ -367,76 +426,56 @@ export async function POST(request) {
       mimeType: resolvedMimeType,
     });
 
-    const geminiResponse = await fetch(
-      'https://generativelanguage.googleapis.com/v1beta/interactions',
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': apiKey,
-        },
-        body: JSON.stringify({
-          model: MODEL,
-          input,
-          response_format: {
-            type: 'text',
-            mime_type: 'application/json',
-            schema: {
-              type: 'object',
-              properties: {
-                title: { type: 'string' },
-                summary: { type: 'string' },
-                deadline: { type: 'string' },
-                event_date: { type: 'string' },
-                location: { type: 'string' },
-                target_audience: { type: 'string' },
-                important_dates: {
-                  type: 'array',
-                  items: {
-                    type: 'object',
-                    properties: {
-                      label: { type: 'string' },
-                      date: { type: 'string' },
-                      time: { type: 'string' },
-                    },
-                    required: ['label', 'date', 'time'],
-                  },
+    const geminiData = await requestGeminiWithRetry(apiKey, {
+      model: MODEL,
+      input,
+      response_format: {
+        type: 'text',
+        mime_type: 'application/json',
+        schema: {
+          type: 'object',
+          properties: {
+            title: { type: 'string' },
+            summary: { type: 'string' },
+            deadline: { type: 'string' },
+            event_date: { type: 'string' },
+            location: { type: 'string' },
+            target_audience: { type: 'string' },
+            important_dates: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  label: { type: 'string' },
+                  date: { type: 'string' },
+                  time: { type: 'string' },
                 },
-                tasks: {
-                  type: 'array',
-                  items: { type: 'string' },
-                },
-                category: {
-                  type: 'string',
-                  enum: ['학교', '대회', '행사', '모집', '취업', '장학', '기타'],
-                },
+                required: ['label', 'date', 'time'],
               },
-              required: [
-                'title',
-                'summary',
-                'deadline',
-                'event_date',
-                'location',
-                'target_audience',
-                'important_dates',
-                'tasks',
-                'category',
-              ],
+            },
+            tasks: {
+              type: 'array',
+              items: { type: 'string' },
+            },
+            category: {
+              type: 'string',
+              enum: ['학교', '대회', '행사', '모집', '취업', '장학', '기타'],
             },
           },
-        }),
-      }
-    );
-
-    const geminiData = await geminiResponse.json();
-
-    if (!geminiResponse.ok) {
-      const reason =
-        geminiData?.error?.message ||
-        geminiData?.message ||
-        'Gemini 분석 요청에 실패했습니다.';
-      throw new Error(reason);
-    }
+          required: [
+            'title',
+            'summary',
+            'deadline',
+            'event_date',
+            'location',
+            'target_audience',
+            'important_dates',
+            'tasks',
+            'category',
+          ],
+        },
+      },
+    });
 
     const responseText = extractGeminiText(geminiData);
 
