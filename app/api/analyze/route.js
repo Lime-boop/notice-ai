@@ -4,7 +4,6 @@ import { open as openHwp, documentText as getHwpText } from 'js-hwp';
 
 export const maxDuration = 300;
 
-const MODEL = 'gemini-3.8-flash';
 const MAX_FILE_SIZE = 30 * 1024 * 1024;
 const MAX_EXTRACTED_TEXT = 180000;
 
@@ -30,73 +29,69 @@ function getServerSupabase() {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function requestGeminiWithRetry(apiKey, body) {
-  const delays = [0, 1500, 3000];
+  // Begin with 3.7 Flash; on temporary overload or timeout try 3.6 Flash.
+  const models = ['gemini-3.7-flash', 'gemini-3.6-flash'];
+  const retryable = new Set([429, 500, 502, 503, 504]);
   let lastMessage = 'Gemini 분석 요청에 실패했습니다.';
 
-  for (const delay of delays) {
-    if (delay) await sleep(delay);
+  for (const model of models) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (attempt > 0) await sleep(1200);
 
-    let response;
-
-    try {
-      response = await fetch(
-        'https://generativelanguage.googleapis.com/v1beta/interactions',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-goog-api-key': apiKey,
-          },
-          body: JSON.stringify(body),
-          signal: AbortSignal.timeout(45000),
-        }
-      );
-    } catch (error) {
-      lastMessage =
-        error?.name === 'TimeoutError' || error?.name === 'AbortError'
-          ? 'Gemini 응답이 45초 안에 오지 않아 요청을 다시 시도했습니다.'
-          : error instanceof Error
-          ? error.message
-          : 'Gemini 네트워크 요청에 실패했습니다.';
-
-      continue;
-    }
-
-    const rawBody = await response.text();
-    let data = null;
-
-    if (rawBody) {
+      let response;
       try {
-        data = JSON.parse(rawBody);
-      } catch {
-        data = null;
-      }
-    }
-
-    if (response.ok) {
-      if (!data) {
-        throw new Error(
-          'Gemini가 JSON이 아닌 응답을 반환했습니다. 잠시 후 다시 시도해주세요.'
+        response = await fetch(
+          'https://generativelanguage.googleapis.com/v1beta/interactions',
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-goog-api-key': apiKey,
+            },
+            body: JSON.stringify({ ...body, model }),
+            signal: AbortSignal.timeout(45000),
+          }
         );
+      } catch (error) {
+        lastMessage =
+          error?.name === 'TimeoutError' || error?.name === 'AbortError'
+            ? `${model} 모델의 응답 시간이 초과되었습니다.`
+            : error instanceof Error ? error.message : '네트워크 연결 실패';
+        continue;
       }
 
-      return data;
-    }
+      const rawBody = await response.text();
+      let data = null;
+      try {
+        if (rawBody) data = JSON.parse(rawBody);
+      } catch {
+        // Some upstream failures return plain text instead of JSON.
+      }
 
-    lastMessage =
-      data?.error?.message ||
-      data?.message ||
-      rawBody?.slice(0, 500) ||
-      `Gemini 요청 실패 (HTTP ${response.status})`;
+      if (response.ok && data) {
+        return data;
+      }
 
-    if (![429, 500, 502, 503, 504].includes(response.status)) {
-      throw new Error(lastMessage);
+      lastMessage =
+        data?.error?.message ||
+        data?.message ||
+        rawBody?.replace(/\s+/g, ' ').slice(0, 300) ||
+        `HTTP ${response.status}`;
+
+      if (response.ok) {
+        // Malformed/empty responses can be intermittent.
+        continue;
+      }
+      if (!retryable.has(response.status)) {
+        // Invalid keys, permissions and bad requests should not be retried.
+        throw new Error(`Gemini 요청 실패 (${model}): ${lastMessage}`);
+      }
     }
   }
 
   throw new Error(
-    'Gemini 서버가 혼잡하거나 일시적으로 응답하지 않습니다. 잠시 후 다시 시도해주세요. ' +
-      lastMessage
+    'Gemini 3.7 및 3.6 Flash가 모두 일시적으로 응답하지 않았습니다. ' +
+      '잠시 후 다시 시도해주세요. 마지막 오류: ' + lastMessage
   );
 }
 
@@ -441,7 +436,6 @@ export async function POST(request) {
     });
 
     const geminiData = await requestGeminiWithRetry(apiKey, {
-      model: MODEL,
       input,
       response_format: {
         type: 'text',
