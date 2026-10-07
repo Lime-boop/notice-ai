@@ -2,7 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import JSZip from 'jszip';
 import { open as openHwp, documentText as getHwpText } from 'js-hwp';
 
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 const MODEL = 'gemini-3.8-flash';
 const MAX_FILE_SIZE = 30 * 1024 * 1024;
@@ -30,23 +30,37 @@ function getServerSupabase() {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function requestGeminiWithRetry(apiKey, body) {
-  const delays = [0, 1000, 2000, 4000];
+  const delays = [0, 1500, 3000];
   let lastMessage = 'Gemini 분석 요청에 실패했습니다.';
 
   for (const delay of delays) {
     if (delay) await sleep(delay);
 
-    const response = await fetch(
-      'https://generativelanguage.googleapis.com/v1beta/interactions',
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': apiKey,
-        },
-        body: JSON.stringify(body),
-      }
-    );
+    let response;
+
+    try {
+      response = await fetch(
+        'https://generativelanguage.googleapis.com/v1beta/interactions',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': apiKey,
+          },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(45000),
+        }
+      );
+    } catch (error) {
+      lastMessage =
+        error?.name === 'TimeoutError' || error?.name === 'AbortError'
+          ? 'Gemini 응답이 45초 안에 오지 않아 요청을 다시 시도했습니다.'
+          : error instanceof Error
+          ? error.message
+          : 'Gemini 네트워크 요청에 실패했습니다.';
+
+      continue;
+    }
 
     const rawBody = await response.text();
     let data = null;
