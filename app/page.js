@@ -6,6 +6,30 @@ import { supabase } from '../lib/supabaseClient';
 const MAX_FILE_SIZE = 30 * 1024 * 1024;
 const ALLOWED_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'pdf', 'hwp', 'hwpx', 'docx', 'txt', 'csv'];
 
+async function parseJsonResponse(response) {
+  const raw = await response.text();
+
+  if (!raw) {
+    return {
+      success: false,
+      error: `서버가 빈 응답을 반환했습니다. (HTTP ${response.status})`,
+    };
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const preview = raw.replace(/\s+/g, ' ').trim().slice(0, 300);
+
+    return {
+      success: false,
+      error:
+        `서버가 JSON이 아닌 응답을 반환했습니다. (HTTP ${response.status})` +
+        (preview ? ` · ${preview}` : ''),
+    };
+  }
+}
+
 export default function Home() {
   const inputRef = useRef(null);
 
@@ -189,7 +213,7 @@ export default function Home() {
         }),
       });
 
-      const analysis = await response.json();
+      const analysis = await parseJsonResponse(response);
 
       if (!response.ok || !analysis.success) {
         throw new Error(analysis.error || 'AI 분석에 실패했습니다.');
